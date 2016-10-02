@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -116,9 +117,7 @@ func maitenance(w http.ResponseWriter, r *http.Request) {
 }
 func importFromJson(w http.ResponseWriter, r *http.Request) {
 	//load group_id
-	group_id := 0
-	grow := maindb.QueryRow(`select "GROUP_ID" from "USERS" where "IS_ADMIN" =false limit 1`)
-	grow.Scan(&group_id)
+
 	log.Println("Begin file import")
 	r.ParseMultipartForm(150000000)
 	file, _, err := r.FormFile("json_file")
@@ -158,61 +157,170 @@ func importFromJson(w http.ResponseWriter, r *http.Request) {
 			if v.InputPlan == nil {
 				log.Println("Input plan not found : ")
 			} else {
-				//TODO input plan load
-				//find plan by name
-				quizid, er := restorePlan(v.Name, *v.InputPlan)
-				log.Println("Process quizid , ", quizid)
-				if er == nil {
-					log.Println("Linking plan")
-					log.Println("Try find existing plan and attach quiz")
-					plan_name := ""
-					var plan_id int64
-					plan_id = 0
-					row := maindb.QueryRow(`select "ID","Name" from "QTASKS" where "Name"=$1`, v.InputPlan.Name)
-					nfp := row.Scan(&plan_id, &plan_name)
-					if nfp != nil {
-						log.Println("Plan not found by Name ", v.InputPlan.Name)
-					}
-				}
-
+				InPlanRestore(v)
 			}
 			if v.OutputPlan == nil {
 				log.Println("Output plan not found : ")
 			} else {
-				//TODO output plan load
-				quizid, er := restorePlan(v.Name, *v.OutputPlan)
-				log.Println("Process quizid , ", quizid)
-				if er == nil {
-					log.Println("Linking plan")
-					log.Println("Try find existing plan and attach quiz")
-					plan_name := ""
-					var plan_id int64
-					plan_id = 0
-					row := maindb.QueryRow(`select "ID","Name" from "QTASKS" where "Name"=$1`, v.OutputPlan.Name)
-					nfp := row.Scan(&plan_id, &plan_name)
-					if nfp != nil {
-						log.Println("Plan not found by Name ", v.OutputPlan.Name)
-						log.Println("Create plan by name and link to quiz id")
-						qtask_id := 0
-						nc := strings.Replace(v.OutputPlan.Content, `coursequizid="`+strconv.FormatInt(course_id, 10)+`"`, `coursequizid="`+strconv.FormatInt(v.ID, 10)+`"`, -1)
-						//TODO
-						result := maindb.QueryRow(`insert into "QTASKS" ("Name","SRC_ID","Content","GROUP_ID") values($1,$2,$3,$4) returning "ID"`, v.OutputPlan.Name, nc, group_id)
-						f := result.Scan(&qtask_id)
-						log.Println("Could not add plan task : ", f)
-						//assign qtask to course
 
-					}
-				}
+				OutPlanRestore(v)
+
 			}
 
 		}
 
 	}
 	tx.Commit()
+	SelfUpdateQtasks()
 	w.Write([]byte("OK"))
 
 }
+func SelfUpdateQtasks() {
 
+	rx_id := regexp.MustCompile(`\sid=\"\d{1,}\"`)
+	rx_quiz := regexp.MustCompile(`\scoursequizid=\"\d{1,}\"`)
+
+	tx, _ := maindb.Begin()
+	//	c := `<quizTask label="БЧ-5-4" id="7" slf_ctrl="0" time="60" mark5="90" groupId="2" coursequizid="22" mark3="50" mark4="70" canReturn="0" random="0">
+	//    <uuids/>
+	//</quizTask>
+	//`
+	rows, e := maindb.Query(`select "ID","SRC_ID","Content" from "QTASKS"`)
+
+	if e != nil {
+		log.Println("Erro getting qtasks ", e)
+		tx.Rollback()
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var src_id int64
+		var content string
+		qte := rows.Scan(&id, &src_id, &content)
+		log.Println("get qtask error ", qte)
+		content = rx_id.ReplaceAllString(content, ` id="`+strconv.FormatInt(id, 10)+`"`)
+		content = rx_quiz.ReplaceAllString(content, ` coursequizid="`+strconv.FormatInt(src_id, 10)+`"`)
+
+		_, upp_res := tx.Exec(`update "QTASKS" set "Content"=$1 where "ID"=$2`, content, id)
+		if upp_res != nil {
+			log.Println("Could not update qtask ", id, upp_res)
+		}
+		log.Println("replace qtask to :", content)
+	}
+
+	//select each qtask and set <quiztask coursequizid="SRC_ID" id="ID"
+	tx.Commit()
+
+}
+func OutPlanRestore(v Course) {
+	group_id := 0
+	grow := maindb.QueryRow(`select "GROUP_ID" from "USERS" where "IS_ADMIN" =false limit 1`)
+	grow.Scan(&group_id)
+	quizid_out, er := restorePlan(v.Name, *v.OutputPlan)
+	log.Println("Process quizid , ", quizid_out)
+	if er == nil {
+		log.Println("Linking plan")
+		log.Println("Try find existing plan and attach quiz")
+		plan_name := ""
+		var plan_id int64
+		plan_id = 0
+		row := maindb.QueryRow(`select "ID","Name" from "QTASKS" where "Name"=$1`, v.OutputPlan.Name)
+		nfp := row.Scan(&plan_id, &plan_name)
+		if nfp != nil {
+			log.Println("Plan not found by Name ", v.OutputPlan.Name)
+			log.Println("Create plan by name and link to quiz id")
+			qtask_id := 0
+			nc := strings.Replace(v.OutputPlan.Content, ` coursequizid="`+strconv.FormatInt(v.OutputPlan.ID, 10)+`"`, ` coursequizid="`+strconv.FormatInt(quizid_out, 10)+`"`, -1)
+			//quizid==outputplan.id
+			result := maindb.QueryRow(`insert into "QTASKS" ("Name","SRC_ID","Content","GROUP_ID") values($1,$2,$3,$4) returning "ID"`, v.OutputPlan.Name, quizid_out, nc, group_id)
+			f := result.Scan(&qtask_id)
+			log.Println("Could not add plan task : ", f)
+			//assign qtask to course
+			//nc = strings.Replace(nc, `coursequizid="`+strconv.FormatInt(course_id, 10)+`"`, `coursequizid="`+strconv.FormatInt(v.ID, 10)+`"`, -1)
+
+		} else {
+			//if plan exists
+			log.Println("QTask exists")
+			//nc2 := strings.Replace(v.OutputPlan.Content, ` coursequizid="`+strconv.FormatInt(v.OutputPlan.ID, 10)+`"`, ` coursequizid="`+strconv.FormatInt(quizid, 10)+`"`, -1)
+			//						log.Println("Replacing to : ", nc2)
+			_, ue := maindb.Exec(`update "QTASKS" set "SRC_ID"=$1,"Content"=$2 where "Name"=$3`, quizid_out, v.OutputPlan.Content, v.OutputPlan.Name)
+			log.Println("errro updating existang QTASK", ue)
+
+		}
+
+	}
+	log.Println("Assign OUT  plan to course")
+	log.Println("Select Qtask by name")
+	out_qtask_id := 0
+	prow := maindb.QueryRow(`select "ID" from "QTASKS" where "Name"=$1`, v.OutputPlan.Name)
+	xx := prow.Scan(&out_qtask_id)
+	log.Println("error getting out_qtask_id", xx)
+	if xx == nil {
+		_, ue := maindb.Exec(`update "Cources" set "output_plan_id"=$1,"skip_input_plan_result"=$2,"TaskName"=$3  where "Name"=$4`, out_qtask_id, v.SkipInputPlanResult, v.TaskName, v.Name)
+		log.Println("Error updating cource ", ue)
+	}
+
+	//	log.Println("Assign IN  plan to course")
+	//	log.Println("Select IN Qtask by name")
+	//	in_qtask_id := 0
+	//	prow_in := maindb.QueryRow(`select "ID" from "QTASKS" where "Name"=$1`, v.InputPlan.Name)
+	//	xx_in := prow_in.Scan(&in_qtask_id)
+	//	log.Println("error getting out_qtask_id", xx)
+	//	if xx_in == nil {
+	//		_, ue := maindb.Exec(`update "Cources" set "input_plan_id"=$1  where "Name"=$2`, in_qtask_id, v.Name)
+	//		log.Println("Error updating cource ", ue)
+	//	}
+}
+func InPlanRestore(v Course) {
+	group_id := 0
+	grow := maindb.QueryRow(`select "GROUP_ID" from "USERS" where "IS_ADMIN" =false limit 1`)
+	grow.Scan(&group_id)
+	quizid_out, er := restorePlan(v.Name, *v.InputPlan)
+	log.Println("Process quizid , ", quizid_out)
+	if er == nil {
+		log.Println("Linking plan")
+		log.Println("Try find existing plan and attach quiz")
+		plan_name := ""
+		var plan_id int64
+		plan_id = 0
+		row := maindb.QueryRow(`select "ID","Name" from "QTASKS" where "Name"=$1`, v.InputPlan.Name)
+		nfp := row.Scan(&plan_id, &plan_name)
+		if nfp != nil {
+			log.Println("Plan not found by Name ", v.InputPlan.Name)
+			log.Println("Create plan by name and link to quiz id")
+			qtask_id := 0
+			nc := strings.Replace(v.InputPlan.Content, ` coursequizid="`+strconv.FormatInt(v.InputPlan.ID, 10)+`"`, ` coursequizid="`+strconv.FormatInt(quizid_out, 10)+`"`, -1)
+			//quizid==outputplan.id
+			result := maindb.QueryRow(`insert into "QTASKS" ("Name","SRC_ID","Content","GROUP_ID") values($1,$2,$3,$4) returning "ID"`, v.InputPlan.Name, quizid_out, nc, group_id)
+			f := result.Scan(&qtask_id)
+			log.Println("Could not add plan task : ", f)
+			//assign qtask to course
+			//nc = strings.Replace(nc, `coursequizid="`+strconv.FormatInt(course_id, 10)+`"`, `coursequizid="`+strconv.FormatInt(v.ID, 10)+`"`, -1)
+
+		} else {
+			//if plan exists
+			log.Println("QTask exists")
+			//nc2 := strings.Replace(v.OutputPlan.Content, ` coursequizid="`+strconv.FormatInt(v.OutputPlan.ID, 10)+`"`, ` coursequizid="`+strconv.FormatInt(quizid, 10)+`"`, -1)
+			//						log.Println("Replacing to : ", nc2)
+			_, ue := maindb.Exec(`update "QTASKS" set "SRC_ID"=$1,"Content"=$2 where "Name"=$3`, quizid_out, v.InputPlan.Content, v.InputPlan.Name)
+			log.Println("errro updating existang QTASK", ue)
+
+		}
+
+	}
+	log.Println("Assign OUT  plan to course")
+	log.Println("Select Qtask by name")
+	out_qtask_id := 0
+	prow := maindb.QueryRow(`select "ID" from "QTASKS" where "Name"=$1`, v.InputPlan.Name)
+	xx := prow.Scan(&out_qtask_id)
+	log.Println("error getting out_qtask_id", xx)
+	if xx == nil {
+		_, ue := maindb.Exec(`update "Cources" set "input_plan_id"=$1  where "Name"=$2`, out_qtask_id, v.Name)
+		log.Println("Error updating cource ", ue)
+	}
+
+}
 func validateQTaskContrains() bool {
 	q := maindb.QueryRow(`SELECT 1 FROM pg_constraint WHERE conname = 'Qtask_unique_name'`)
 	name := -1
@@ -234,15 +342,16 @@ func validateQTaskContrains() bool {
 	//  ADD CONSTRAINT "Qtask_unique_name" UNIQUE ("Name");
 
 }
-func restorePlan(course_name string, t QTask) (int, error) {
-	log.Println("Input plan are : ", t.Name, t.QuizTask.Name)
+func restorePlan(course_name string, t QTask) (int64, error) {
+	log.Println("plan are : ", t.Name, t.QuizTask.Name)
 
 	//restore quiz and link it to Task
 	q := t.QuizTask
 	//select if quiz exists
 	//q.Name
 	qname := ""
-	qid := 0
+	var qid int64
+	qid = 0
 	row := maindb.QueryRow(`select "ID","Name" from "Quiz" where "Name"=$1`, q.Name)
 	err := row.Scan(&qid, &qname)
 
@@ -261,13 +370,13 @@ func restorePlan(course_name string, t QTask) (int, error) {
 		}
 
 	} else {
-		log.Println("Quiz already exists,just update it")
+		log.Println("Quiz already exists,just update it", qid)
 	}
 	//update quiz content with normal coursequizid=="currentid"
 	log.Println("Finally update coure")
 	log.Println("update quiz content with normal coursequizid==''", qid)
-	rc := strings.Replace(q.Content, " id=\""+strconv.FormatInt(q.ID, 10)+"\">", " id=\""+strconv.Itoa(qid)+"\">", -1)
-	//log.Println("Replcae quiz content to : ", rc)
+	rc := strings.Replace(q.Content, " id=\""+strconv.FormatInt(q.ID, 10)+"\">", " id=\""+strconv.FormatInt(qid, 10)+"\">", -1)
+	//	log.Println("Replcae quiz content to : ", rc)
 	_, ex := maindb.Exec(`update "Quiz" set "Name"=$1,"SecretWord"=$2,"TaskName"=$3,"Content"=$4 where "ID"=$5`, q.Name, q.SecretWord, q.TaskName, rc, qid)
 	log.Println("Error quiz updating", ex)
 	return qid, nil
@@ -311,6 +420,7 @@ func courcesList(w http.ResponseWriter, r *http.Request) {
 }
 
 func init() {
+
 	log.Println("Current time", time.Now().Format(tf))
 	log.Println("App init")
 	//read ini cfg file
