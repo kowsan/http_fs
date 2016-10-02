@@ -4,10 +4,11 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"http_sync_client/synclib"
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/kowsan/libsync/synclib"
 )
 
 var (
