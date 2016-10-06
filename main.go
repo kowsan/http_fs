@@ -93,7 +93,7 @@ func maitenance(w http.ResponseWriter, r *http.Request) {
 	if validateQTaskContrains() == false {
 
 		es := "Doublicates found\n"
-		res, e := maindb.Query(`select "Name",count("Name") from "QTASKS" group by "Name" having count(*)>1`)
+		res, e := maindb.Query(`select "TaskName",count("TaskName") from "QTASKS" group by "TaskName" having count(*)>1`)
 		if e != nil {
 			log.Println("critical erro get uniq")
 			w.WriteHeader(500)
@@ -104,7 +104,7 @@ func maitenance(w http.ResponseWriter, r *http.Request) {
 			var name string
 			var count string
 			res.Scan(&name, &count)
-			es += "Name :  '" + name + "' Times : " + count + "\n"
+			es += "TaskName :  '" + name + "' Times : " + count + "\n"
 		}
 		es += "Please rename Qtasks(kontrolnye) and reload this page"
 		w.Write([]byte(es))
@@ -146,13 +146,13 @@ func importFromJson(w http.ResponseWriter, r *http.Request) {
 		//log.Println("input plan for course : ", v.ID, v.InputPlan)
 		//log.Println("output plan for course : ", v.ID, v.OutputPlan)
 		log.Println("Testing course for exists", v.ID, v.Name, v.SecretWord, v.TaskName)
-		log.Println("Search course by name ", v.Name) //name is unique
-		crow := tx.QueryRow(`select "ID" from "Cources" where "Name"=$1`, v.Name)
+		log.Println("Search course by taskName ", v.TaskName) //name is unique
+		crow := tx.QueryRow(`select "ID" from "Cources" where "TaskName"=$1`, v.TaskName)
 
 		crow.Scan(&course_id)
 		log.Println("Getting course id : ", course_id)
 		if course_id == 0 {
-			log.Println("Course not found by name : ", v.Name, "Skip it")
+			log.Println("Course not found by taskname : ", v.TaskName, "Skip it")
 		} else {
 			if v.InputPlan == nil {
 				log.Println("Input plan not found : ")
@@ -257,7 +257,7 @@ func OutPlanRestore(v Course) {
 	xx := prow.Scan(&out_qtask_id)
 	log.Println("error getting out_qtask_id", xx)
 	if xx == nil {
-		_, ue := maindb.Exec(`update "Cources" set "output_plan_id"=$1,"skip_input_plan_result"=$2,"TaskName"=$3  where "Name"=$4`, out_qtask_id, v.SkipInputPlanResult, v.TaskName, v.Name)
+		_, ue := maindb.Exec(`update "Cources" set "output_plan_id"=$1,"skip_input_plan_result"=$2,"Name"=$3  where "TaskName"=$4`, out_qtask_id, v.SkipInputPlanResult, v.Name, v.TaskName)
 		log.Println("Error updating cource ", ue)
 	}
 
@@ -316,7 +316,7 @@ func InPlanRestore(v Course) {
 	xx := prow.Scan(&out_qtask_id)
 	log.Println("error getting out_qtask_id", xx)
 	if xx == nil {
-		_, ue := maindb.Exec(`update "Cources" set "input_plan_id"=$1  where "Name"=$2`, out_qtask_id, v.Name)
+		_, ue := maindb.Exec(`update "Cources" set "input_plan_id"=$1  where "TaskName"=$2`, out_qtask_id, v.TaskName)
 		log.Println("Error updating cource ", ue)
 	}
 
@@ -352,7 +352,7 @@ func restorePlan(course_name string, t QTask) (int64, error) {
 	qname := ""
 	var qid int64
 	qid = 0
-	row := maindb.QueryRow(`select "ID","Name" from "Quiz" where "Name"=$1`, q.Name)
+	row := maindb.QueryRow(`select "ID","TaskName" from "Quiz" where "TaskName"=$1`, q.TaskName)
 	err := row.Scan(&qid, &qname)
 
 	if err != nil {
